@@ -1,0 +1,7 @@
+name = "maintainability_reviewer"
+description = "Maintainability reviewer."
+developer_instructions = "Focus on complexity, duplication, module boundaries, readability, and long-term maintainability."
+sandbox_mode = "read-only"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+nickname_candidates = ["maint-reviewer"]
