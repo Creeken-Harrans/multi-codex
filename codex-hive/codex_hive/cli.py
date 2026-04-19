@@ -23,6 +23,7 @@ from .db import StateDB
 from .eventlog import EventLogger
 from .models import RepoHealth, RunReport, RunStatus
 from .runtime.orchestrator import Orchestrator
+from .runtime.adaptive_planner import plan_with_codex, should_use_adaptive_planner
 from .runtime.resume import ResumeManager
 from .utils.paths import ensure_dir, resolve_repo_root
 from .utils.serialization import to_json, write_json
@@ -84,32 +85,32 @@ def format_event_message(event: dict) -> str | None:
     task_id = event.get("task_id")
     payload = event.get("payload", {})
     if event_type == "plan_ready":
-        return f"Plan ready: strategy={payload.get('strategy')} tasks={', '.join(payload.get('tasks', []))}"
+        return f"[ORCHESTRATOR] Plan ready | strategy={payload.get('strategy')} | tasks={', '.join(payload.get('tasks', []))}"
     if event_type == "batch_started":
-        return f"Dispatch batch: {', '.join(payload.get('tasks', []))}"
+        return f"[HANDOFF] Dispatch batch -> {', '.join(payload.get('tasks', []))}"
     if event_type == "worker_started":
         suffix = f" role={payload.get('role')}"
         if payload.get("worktree_path"):
             suffix += f" worktree={payload.get('worktree_path')}"
-        return f"Worker started: {task_id}{suffix}"
+        return f"[WORKER] Started {task_id}{suffix}"
     if event_type == "worker_completed":
-        return f"Worker completed: {task_id} status={payload.get('status')}"
+        return f"[WORKER] Completed {task_id} | status={payload.get('status')}"
     if event_type == "worker_failed":
-        return f"Worker failed: {task_id} error={payload.get('error')}"
+        return f"[WORKER] Failed {task_id} | error={payload.get('error')}"
     if event_type == "consensus_ready":
-        return f"Consensus ready: findings={payload.get('finding_count')} overall_score={payload.get('overall_score')}"
+        return f"[CONSENSUS] Ready | findings={payload.get('finding_count')} | score={payload.get('overall_score')}"
     if event_type == "debate_applied":
-        return f"Debate applied: selected={payload.get('selected_task_id')} rounds={payload.get('debate_rounds')}"
+        return f"[DEBATE] Applied | selected={payload.get('selected_task_id')} | rounds={payload.get('debate_rounds')}"
     if event_type == "merge_planned":
-        return f"Merge planned: branches={len(payload.get('branches', []))} actions={len(payload.get('actions', []))}"
+        return f"[MERGE] Planned | branches={len(payload.get('branches', []))} | actions={len(payload.get('actions', []))}"
     if event_type == "merge_completed":
-        return f"Merge completed: files={', '.join(payload.get('merged_files', [])) or 'none'}"
+        return f"[MERGE] Completed | files={', '.join(payload.get('merged_files', [])) or 'none'}"
     if event_type == "verification_completed":
-        return f"Verification completed: returncodes={payload.get('returncodes', [])}"
+        return f"[VERIFY] Completed | returncodes={payload.get('returncodes', [])}"
     if event_type == "mission_checked":
-        return f"Mission checked: passed={payload.get('passed')} score={payload.get('goal_alignment_score')}"
+        return f"[MISSION] Checked | passed={payload.get('passed')} | score={payload.get('goal_alignment_score')}"
     if event_type == "run_completed":
-        return f"Run completed: status={payload.get('status')}"
+        return f"[ORCHESTRATOR] Run completed | status={payload.get('status')}"
     return None
 
 
@@ -147,7 +148,7 @@ def start_progress_reporter(db_path: Path, eventlog_path: Path, run_id: str) -> 
                     )
                     if snapshot != last_snapshot:
                         counts = ", ".join(f"{key}={value}" for key, value in summary["counts"].items()) or "no tasks yet"
-                        line = f"[{run_id}] {run.status.value} | completed {summary['completed']}/{summary['total']} | {counts}"
+                        line = f"[{run_id}] [PROGRESS] {run.status.value} | completed {summary['completed']}/{summary['total']} | {counts}"
                         if summary["active"]:
                             line += f" | active: {', '.join(summary['active'])}"
                         console.print(line)
@@ -217,7 +218,10 @@ def run(
     chosen_adapter = pick_adapter(config, adapter)
     orchestrator = Orchestrator(root, config, db, eventlog, chosen_adapter)
     mission = orchestrator.parse_mission(task)
-    plan_output = orchestrator.plan(mission, strategy)
+    if chosen_adapter.name == "codex-cli" and (strategy is None or strategy == "auto") and should_use_adaptive_planner(mission):
+        plan_output = asyncio.run(plan_with_codex(root, config, mission)) or orchestrator.plan(mission, strategy)
+    else:
+        plan_output = orchestrator.plan(mission, strategy)
     run_id = orchestrator.create_run_id(task)
     stop_event = None
     reporter_thread = None
@@ -300,6 +304,50 @@ def inspect(
         render_json(data)
         return
     console.print_json(to_json(data))
+
+
+@app.command()
+def trace(
+    run_id: str,
+    task_id: Annotated[str | None, typer.Option("--task-id")] = None,
+    repo_root: Annotated[Path | None, typer.Option("--repo-root")] = None,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    root = resolve_repo_root(repo_root)
+    config, _, _ = load_app(root)
+    agents_dir = root / config.general.artifacts_dir / run_id / "agents"
+    if not agents_dir.exists():
+        raise typer.BadParameter(f"No worker traces for {run_id}")
+    trace_dirs = sorted(path for path in agents_dir.iterdir() if path.is_dir())
+    if task_id is not None:
+        trace_dirs = [path for path in trace_dirs if path.name.startswith(f"{task_id}--")]
+    payload = []
+    for trace_dir in trace_dirs:
+        trace_file = trace_dir / "trace.json"
+        result_file = trace_dir / "result.json"
+        payload.append(
+            {
+                "trace_id": trace_dir.name,
+                "trace": json.loads(trace_file.read_text(encoding="utf-8")) if trace_file.exists() else {},
+                "result": json.loads(result_file.read_text(encoding="utf-8")) if result_file.exists() else {},
+            }
+        )
+    if json_output:
+        render_json(payload)
+        return
+    for item in payload:
+        trace_data = item["trace"]
+        console.rule(item["trace_id"])
+        console.print(f"cwd: {trace_data.get('cwd')}")
+        console.print(f"command: {' '.join(trace_data.get('command', []))}")
+        console.print("input:")
+        console.print_json(to_json(trace_data.get("input_envelope", {})))
+        if trace_data.get("final_message"):
+            console.print("final_message:")
+            console.print(trace_data["final_message"])
+        else:
+            console.print("reply/result:")
+            console.print_json(to_json(item.get("result", {})))
 
 
 @app.command()

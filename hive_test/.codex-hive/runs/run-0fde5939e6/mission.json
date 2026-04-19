@@ -1,0 +1,44 @@
+{
+  "acceptance_criteria": [
+    {
+      "description": "source code",
+      "evidence_hint": null,
+      "mandatory": true
+    },
+    {
+      "description": "tests",
+      "evidence_hint": null,
+      "mandatory": true
+    },
+    {
+      "description": "documentation",
+      "evidence_hint": null,
+      "mandatory": true
+    }
+  ],
+  "constraints": [
+    "use worktree isolation for write-heavy tasks",
+    "persist state in sqlite and jsonl"
+  ],
+  "deliverables": [
+    "source code",
+    "tests",
+    "documentation",
+    "artifacts"
+  ],
+  "mission": "打一场辩论赛, 辩题你自己选, 最终成果是.md文件",
+  "out_of_scope": [
+    ".git",
+    ".venv"
+  ],
+  "risk_level": "medium",
+  "scope": [
+    "codex_hive",
+    "README.md",
+    "docs",
+    "tests",
+    ".codex",
+    "AGENTS.md",
+    "examples"
+  ]
+}

@@ -1,0 +1,291 @@
+{
+  "mission": {
+    "acceptance_criteria": [
+      {
+        "description": "source code",
+        "evidence_hint": null,
+        "mandatory": true
+      },
+      {
+        "description": "tests",
+        "evidence_hint": null,
+        "mandatory": true
+      },
+      {
+        "description": "documentation",
+        "evidence_hint": null,
+        "mandatory": true
+      }
+    ],
+    "constraints": [
+      "use worktree isolation for write-heavy tasks",
+      "persist state in sqlite and jsonl"
+    ],
+    "deliverables": [
+      "source code",
+      "tests",
+      "documentation",
+      "artifacts"
+    ],
+    "mission": "打一场辩论赛, 辩题你自己选, 最终成果是.md文件",
+    "out_of_scope": [
+      ".git",
+      ".venv"
+    ],
+    "risk_level": "medium",
+    "scope": [
+      "codex_hive",
+      "README.md",
+      "docs",
+      "tests",
+      ".codex",
+      "AGENTS.md",
+      "examples"
+    ]
+  },
+  "notes": [
+    "v1 heuristic planner"
+  ],
+  "ownership": {
+    "overlapping_paths": [],
+    "parallel_safe": true,
+    "serialized_groups": []
+  },
+  "strategy": "plan-then-execute-council",
+  "tasks": [
+    {
+      "acceptance_criteria": [],
+      "dependencies": [],
+      "description": "Review the orchestrator-provided mission plan for coherence; do not regenerate the DAG",
+      "metadata": {
+        "confidence": 0.8,
+        "max_commands": 3,
+        "max_files_read": 4,
+        "max_stdout_lines": 80,
+        "purpose": "plan_review"
+      },
+      "owned_paths": [],
+      "read_paths": [
+        ".codex-hive/runs"
+      ],
+      "role": "planner",
+      "strategy": null,
+      "task_id": "plan-review",
+      "title": "Review orchestrator plan",
+      "type": "review",
+      "write_enabled": false
+    },
+    {
+      "acceptance_criteria": [],
+      "dependencies": [
+        "plan-review"
+      ],
+      "description": "Collect relevant files and commands",
+      "metadata": {
+        "confidence": 0.75,
+        "max_commands": 6,
+        "max_files_read": 12,
+        "max_stdout_lines": 180
+      },
+      "owned_paths": [],
+      "read_paths": [
+        "."
+      ],
+      "role": "scout",
+      "strategy": null,
+      "task_id": "scout",
+      "title": "Scout repository",
+      "type": "exploration",
+      "write_enabled": false
+    },
+    {
+      "acceptance_criteria": [],
+      "dependencies": [
+        "scout"
+      ],
+      "description": "Define interfaces and structure",
+      "metadata": {
+        "confidence": 0.72,
+        "max_commands": 5,
+        "max_files_read": 10,
+        "max_stdout_lines": 160
+      },
+      "owned_paths": [],
+      "read_paths": [
+        "codex_hive"
+      ],
+      "role": "architect",
+      "strategy": null,
+      "task_id": "architect",
+      "title": "Architect solution",
+      "type": "refactor",
+      "write_enabled": false
+    },
+    {
+      "acceptance_criteria": [],
+      "dependencies": [
+        "architect"
+      ],
+      "description": "Write core code",
+      "metadata": {
+        "confidence": 0.8,
+        "max_commands": 6,
+        "max_files_read": 10,
+        "max_stdout_lines": 160
+      },
+      "owned_paths": [
+        "codex_hive/runtime/generated_core.py"
+      ],
+      "read_paths": [
+        "codex_hive"
+      ],
+      "role": "implementer",
+      "strategy": null,
+      "task_id": "impl-core",
+      "title": "Implement core runtime",
+      "type": "implementation",
+      "write_enabled": true
+    },
+    {
+      "acceptance_criteria": [],
+      "dependencies": [
+        "architect"
+      ],
+      "description": "Update docs and README",
+      "metadata": {
+        "confidence": 0.78,
+        "max_commands": 4,
+        "max_files_read": 8,
+        "max_stdout_lines": 120
+      },
+      "owned_paths": [
+        "docs/generated.md"
+      ],
+      "read_paths": [
+        "docs"
+      ],
+      "role": "implementer",
+      "strategy": null,
+      "task_id": "impl-docs",
+      "title": "Write docs",
+      "type": "documentation",
+      "write_enabled": true
+    },
+    {
+      "acceptance_criteria": [],
+      "dependencies": [
+        "impl-core",
+        "impl-docs"
+      ],
+      "description": "Run verification and tests",
+      "metadata": {
+        "confidence": 0.81,
+        "max_commands": 6,
+        "max_files_read": 8,
+        "max_stdout_lines": 180
+      },
+      "owned_paths": [
+        "tests/generated_test_placeholder.txt"
+      ],
+      "read_paths": [],
+      "role": "tester",
+      "strategy": null,
+      "task_id": "test",
+      "title": "Verify changes",
+      "type": "test_generation",
+      "write_enabled": true
+    },
+    {
+      "acceptance_criteria": [],
+      "dependencies": [
+        "test"
+      ],
+      "description": "Review implementation",
+      "metadata": {
+        "confidence": 0.67,
+        "max_commands": 4,
+        "max_files_read": 8,
+        "max_stdout_lines": 120
+      },
+      "owned_paths": [],
+      "read_paths": [
+        "codex_hive"
+      ],
+      "role": "reviewer",
+      "strategy": null,
+      "task_id": "review-correctness",
+      "title": "Correctness review",
+      "type": "review",
+      "write_enabled": false
+    },
+    {
+      "acceptance_criteria": [],
+      "dependencies": [
+        "test"
+      ],
+      "description": "Review security",
+      "metadata": {
+        "confidence": 0.71,
+        "max_commands": 4,
+        "max_files_read": 8,
+        "max_stdout_lines": 120
+      },
+      "owned_paths": [],
+      "read_paths": [
+        "codex_hive"
+      ],
+      "role": "security_reviewer",
+      "strategy": null,
+      "task_id": "review-security",
+      "title": "Security review",
+      "type": "review",
+      "write_enabled": false
+    },
+    {
+      "acceptance_criteria": [],
+      "dependencies": [
+        "test"
+      ],
+      "description": "Review performance",
+      "metadata": {
+        "confidence": 0.64,
+        "max_commands": 4,
+        "max_files_read": 8,
+        "max_stdout_lines": 120
+      },
+      "owned_paths": [],
+      "read_paths": [
+        "codex_hive"
+      ],
+      "role": "performance_reviewer",
+      "strategy": null,
+      "task_id": "review-performance",
+      "title": "Performance review",
+      "type": "review",
+      "write_enabled": false
+    },
+    {
+      "acceptance_criteria": [],
+      "dependencies": [
+        "test"
+      ],
+      "description": "Review maintainability",
+      "metadata": {
+        "confidence": 0.66,
+        "max_commands": 4,
+        "max_files_read": 8,
+        "max_stdout_lines": 120
+      },
+      "owned_paths": [],
+      "read_paths": [
+        "codex_hive"
+      ],
+      "role": "maintainability_reviewer",
+      "strategy": null,
+      "task_id": "review-maintainability",
+      "title": "Maintainability review",
+      "type": "review",
+      "write_enabled": false
+    }
+  ]
+}

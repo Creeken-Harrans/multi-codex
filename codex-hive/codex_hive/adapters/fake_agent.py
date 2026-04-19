@@ -21,6 +21,25 @@ class FakeAgentAdapter(AgentAdapter):
 
     async def run_assignment(self, assignment: TaskAssignment, envelope: WorkerPromptEnvelope, cwd: Path) -> WorkerResult:
         task = assignment.task
+        trace_prefix = f"[codex-hive {assignment.run_id}/{task.task_id}/{assignment.agent_id}]"
+        print(f"{trace_prefix} [WORKER] adapter=fake", flush=True)
+        print(f"{trace_prefix} [WORKER] cwd={cwd}", flush=True)
+        print(f"{trace_prefix} [INPUT] summary:", flush=True)
+        print(json.dumps({
+            "run_id": assignment.run_id,
+            "agent_id": assignment.agent_id,
+            "role": task.role,
+            "task_id": task.task_id,
+            "task_title": task.title,
+            "dependencies": task.dependencies,
+            "read_paths": task.read_paths,
+            "owned_paths": task.owned_paths,
+            "write_enabled": task.write_enabled,
+            "mission": envelope.mission.mission,
+            "dependency_summary": envelope.verification_summary,
+            "role_instructions": envelope.role_instructions,
+            "output_contract": envelope.output_contract,
+        }, ensure_ascii=False, indent=2), flush=True)
         scenario = task.metadata.get("fake_behavior", "success")
         files_read = task.read_paths or ["README.md"]
         files_changed = task.owned_paths if task.write_enabled else []
@@ -68,6 +87,8 @@ class FakeAgentAdapter(AgentAdapter):
             "files_changed": files_changed,
             "findings": [item.model_dump(mode="json") for item in findings],
         }
+        print(f"{trace_prefix} [RESULT] reply:", flush=True)
+        print(json.dumps(reply_payload, ensure_ascii=False, indent=2), flush=True)
         return WorkerResult(
             task_id=task.task_id,
             agent_id=assignment.agent_id,

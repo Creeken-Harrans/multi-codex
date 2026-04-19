@@ -57,4 +57,32 @@ class ArtifactWriter:
         for result in report.worker_results:
             write_json(self.tasks_dir / f"{result.task_id}.json", result.model_dump(mode="json"))
             files.append(f"tasks/{result.task_id}.json")
+            files.extend(self._write_worker_trace(result))
         return ArtifactIndex(run_dir=str(self.run_dir), files=files)
+
+    def _write_worker_trace(self, result) -> list[str]:
+        trace = result.metadata.get("trace") if isinstance(result.metadata, dict) else None
+        if not trace:
+            return []
+        trace_dir = ensure_dir(self.agents_dir / f"{result.task_id}--{result.agent_id}")
+        files: list[str] = []
+        write_json(trace_dir / "input-envelope.json", trace.get("input_envelope", {}))
+        files.append(f"agents/{trace_dir.name}/input-envelope.json")
+        write_json(trace_dir / "result.json", result.model_dump(mode="json"))
+        files.append(f"agents/{trace_dir.name}/result.json")
+        write_json(trace_dir / "trace.json", trace)
+        files.append(f"agents/{trace_dir.name}/trace.json")
+        command = trace.get("command")
+        if command:
+            (trace_dir / "command.txt").write_text(" ".join(command), encoding="utf-8")
+            files.append(f"agents/{trace_dir.name}/command.txt")
+        if trace.get("prompt") is not None:
+            (trace_dir / "prompt.txt").write_text(str(trace.get("prompt")), encoding="utf-8")
+            files.append(f"agents/{trace_dir.name}/prompt.txt")
+        if trace.get("stdout") is not None:
+            (trace_dir / "stdout.txt").write_text(str(trace.get("stdout")), encoding="utf-8")
+            files.append(f"agents/{trace_dir.name}/stdout.txt")
+        if trace.get("stderr") is not None:
+            (trace_dir / "stderr.txt").write_text(str(trace.get("stderr")), encoding="utf-8")
+            files.append(f"agents/{trace_dir.name}/stderr.txt")
+        return files

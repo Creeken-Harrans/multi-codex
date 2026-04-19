@@ -88,27 +88,35 @@ class Orchestrator:
         lowered = task.lower()
         task_type = TaskType.implementation
         risk = "medium"
+        is_markdown_artifact = self._is_markdown_artifact_mission(lowered)
         if "review" in lowered:
             task_type = TaskType.review
         elif "bug" in lowered or "fix" in lowered:
             task_type = TaskType.bugfix
-        elif "doc" in lowered:
+        elif "doc" in lowered or is_markdown_artifact:
             task_type = TaskType.documentation
         if "auth" in lowered or "oauth" in lowered or "security" in lowered:
             risk = "high"
-        deliverables = ["source code", "tests", "documentation", "artifacts"]
-        scope = ["codex_hive", "README.md", "docs", "tests", ".codex", "AGENTS.md", "examples"]
-        acceptance = [
-            {"description": "source code", "mandatory": True},
-            {"description": "tests", "mandatory": True},
-            {"description": "documentation", "mandatory": True},
-        ]
+        if is_markdown_artifact:
+            deliverables = ["markdown artifact"]
+            scope = ["debate.md", "output.md", "final.md", "README.md", "docs"]
+            acceptance = [{"description": "documentation", "mandatory": True}]
+            constraints = ["create the requested markdown artifact only", "do not add source code or tests unless explicitly requested"]
+        else:
+            deliverables = ["source code", "tests", "documentation", "artifacts"]
+            scope = ["codex_hive", "README.md", "docs", "tests", ".codex", "AGENTS.md", "examples"]
+            acceptance = [
+                {"description": "source code", "mandatory": True},
+                {"description": "tests", "mandatory": True},
+                {"description": "documentation", "mandatory": True},
+            ]
+            constraints = ["use worktree isolation for write-heavy tasks", "persist state in sqlite and jsonl"]
         return MissionSpec.model_validate(
             {
                 "mission": task,
                 "scope": scope,
                 "out_of_scope": [".git", ".venv"],
-                "constraints": ["use worktree isolation for write-heavy tasks", "persist state in sqlite and jsonl"],
+                "constraints": constraints,
                 "deliverables": deliverables,
                 "acceptance_criteria": acceptance,
                 "risk_level": risk,
@@ -116,33 +124,239 @@ class Orchestrator:
         )
 
     def plan(self, mission: MissionSpec, requested_strategy: str | None = None) -> PlannerOutput:
-        tasks: list[TaskSpec] = [
-            TaskSpec(task_id="plan", title="Plan mission", description=mission.mission, type=TaskType.exploration, role="planner", read_paths=["."], metadata={"confidence": 0.8}),
-            TaskSpec(task_id="scout", title="Scout repository", description="Collect relevant files and commands", type=TaskType.exploration, role="scout", dependencies=["plan"], read_paths=["."], metadata={"confidence": 0.75}),
-            TaskSpec(task_id="architect", title="Architect solution", description="Define interfaces and structure", type=TaskType.refactor, role="architect", dependencies=["scout"], read_paths=["codex_hive"], metadata={"confidence": 0.72}),
-            TaskSpec(task_id="impl-core", title="Implement core runtime", description="Write core code", type=TaskType.implementation, role="implementer", dependencies=["architect"], owned_paths=["codex_hive/runtime/generated_core.py"], read_paths=["codex_hive"], write_enabled=True, metadata={"confidence": 0.8}),
-            TaskSpec(task_id="impl-docs", title="Write docs", description="Update docs and README", type=TaskType.documentation, role="implementer", dependencies=["architect"], owned_paths=["docs/generated.md"], read_paths=["docs"], write_enabled=True, metadata={"confidence": 0.78}),
-            TaskSpec(task_id="test", title="Verify changes", description="Run verification and tests", type=TaskType.test_generation, role="tester", dependencies=["impl-core", "impl-docs"], owned_paths=["tests/generated_test_placeholder.txt"], write_enabled=True, metadata={"confidence": 0.81}),
-            TaskSpec(task_id="review-correctness", title="Correctness review", description="Review implementation", type=TaskType.review, role="reviewer", dependencies=["test"], read_paths=["codex_hive"], metadata={"confidence": 0.67}),
-            TaskSpec(task_id="review-security", title="Security review", description="Review security", type=TaskType.review, role="security_reviewer", dependencies=["test"], read_paths=["codex_hive"], metadata={"confidence": 0.71}),
-            TaskSpec(task_id="review-performance", title="Performance review", description="Review performance", type=TaskType.review, role="performance_reviewer", dependencies=["test"], read_paths=["codex_hive"], metadata={"confidence": 0.64}),
-            TaskSpec(task_id="review-maintainability", title="Maintainability review", description="Review maintainability", type=TaskType.review, role="maintainability_reviewer", dependencies=["test"], read_paths=["codex_hive"], metadata={"confidence": 0.66}),
-        ]
-        lowered = mission.mission.lower()
-        strategy = requested_strategy or "auto"
-        if strategy == "auto":
-            if "review" in lowered:
-                strategy = "role-split-review"
-            elif "flaky" in lowered or "bug" in lowered or "fix" in lowered:
-                strategy = "competitive-generation"
+        strategy = self._select_strategy(mission, requested_strategy)
+        if strategy == "debate-artifact":
+            tasks = self._debate_artifact_tasks(mission)
+        elif strategy == "single-artifact":
+            tasks = self._single_artifact_tasks(mission)
+        elif strategy == "simple":
+            tasks = self._simple_tasks(mission)
+        else:
+            tasks = self._full_tasks()
+            if strategy == "competitive-generation":
                 tasks.insert(
                     3,
-                    TaskSpec(task_id="impl-alt", title="Alternative fix", description="Competing implementation", type=TaskType.bugfix, role="implementer", dependencies=["architect"], owned_paths=["codex_hive/runtime/generated_alt.py"], read_paths=["codex_hive"], write_enabled=True, metadata={"confidence": 0.74}),
+                    TaskSpec(
+                        task_id="impl-alt",
+                        title="Alternative fix",
+                        description="Competing implementation",
+                        type=TaskType.bugfix,
+                        role="implementer",
+                        dependencies=["architect"],
+                        owned_paths=["codex_hive/runtime/generated_alt.py"],
+                        read_paths=["codex_hive"],
+                        write_enabled=True,
+                        metadata={"confidence": 0.74, "max_files_read": 10, "max_commands": 6, "max_stdout_lines": 160},
+                    ),
                 )
-            else:
-                strategy = "plan-then-execute-council"
         ownership = analyze_ownership(tasks)
         return PlannerOutput(mission=mission, tasks=tasks, strategy=strategy, ownership=ownership, notes=["v1 heuristic planner"])
+
+    def _select_strategy(self, mission: MissionSpec, requested_strategy: str | None) -> str:
+        if requested_strategy and requested_strategy != "auto":
+            return requested_strategy
+        lowered = mission.mission.lower()
+        if "review" in lowered:
+            return "role-split-review"
+        if any(keyword in lowered for keyword in ("flaky", "bug", "fix")):
+            return "competitive-generation"
+        if self._is_debate_artifact_mission(lowered):
+            return "debate-artifact"
+        if self._is_markdown_artifact_mission(lowered):
+            return "single-artifact"
+        if self._is_simple_mission(lowered):
+            return "simple"
+        return "plan-then-execute-council"
+
+    def _is_debate_artifact_mission(self, lowered_mission: str) -> bool:
+        return "辩论" in lowered_mission or "debate" in lowered_mission
+
+    def _is_markdown_artifact_mission(self, lowered_mission: str) -> bool:
+        return any(marker in lowered_mission for marker in (".md", "markdown", "辩论", "文档", "报告"))
+
+    def _artifact_path_for_mission(self, lowered_mission: str) -> str:
+        if "辩论" in lowered_mission or "debate" in lowered_mission:
+            return "debate.md"
+        if "readme" in lowered_mission:
+            return "README.md"
+        return "output.md"
+
+    def _is_simple_mission(self, lowered_mission: str) -> bool:
+        complex_markers = {
+            "security",
+            "auth",
+            "oauth",
+            "migration",
+            "refactor",
+            "performance",
+            "concurrency",
+            "architecture",
+            "distributed",
+            "database",
+            "multi-agent",
+            "full audit",
+        }
+        if any(marker in lowered_mission for marker in complex_markers):
+            return False
+        simple_markers = {
+            "implement feature",
+            "with tests and docs",
+            "simple",
+            "small",
+            "basic",
+            "add a",
+            "add an",
+        }
+        return any(marker in lowered_mission for marker in simple_markers)
+
+    def _debate_artifact_tasks(self, mission: MissionSpec) -> list[TaskSpec]:
+        artifact_path = self._artifact_path_for_mission(mission.mission.lower())
+        shared_budget = {"max_files_read": 0, "max_commands": 1, "max_stdout_lines": 40}
+        return [
+            TaskSpec(
+                task_id="debater-affirmative",
+                title="Affirmative debater",
+                description=mission.mission,
+                type=TaskType.documentation,
+                role="affirmative_debater",
+                read_paths=[],
+                write_enabled=False,
+                metadata={
+                    "confidence": 0.82,
+                    "strategy": "debate-artifact",
+                    **shared_budget,
+                    "role_instructions": (
+                        "Act as the affirmative debater. If the topic is unspecified, choose a concrete debate topic and argue "
+                        "the affirmative side. Do not modify files. Return strict JSON matching WorkerResult; put your topic, "
+                        "main arguments, rebuttals, and closing statement in summary/findings/metadata."
+                    ),
+                },
+            ),
+            TaskSpec(
+                task_id="debater-negative",
+                title="Negative debater",
+                description=mission.mission,
+                type=TaskType.documentation,
+                role="negative_debater",
+                read_paths=[],
+                write_enabled=False,
+                metadata={
+                    "confidence": 0.82,
+                    "strategy": "debate-artifact",
+                    **shared_budget,
+                    "role_instructions": (
+                        "Act as the negative debater. If the topic is unspecified, use the same likely topic from the mission and "
+                        "argue the opposing side. Do not modify files. Return strict JSON matching WorkerResult; put your topic, "
+                        "main arguments, rebuttals, and closing statement in summary/findings/metadata."
+                    ),
+                },
+            ),
+            TaskSpec(
+                task_id="moderator-writeup",
+                title="Moderator writes final debate markdown",
+                description=mission.mission,
+                type=TaskType.documentation,
+                role="moderator",
+                dependencies=["debater-affirmative", "debater-negative"],
+                owned_paths=[artifact_path],
+                read_paths=[],
+                write_enabled=True,
+                metadata={
+                    "confidence": 0.88,
+                    "strategy": "debate-artifact",
+                    "max_files_read": 0,
+                    "max_commands": 2,
+                    "max_stdout_lines": 60,
+                    "role_instructions": (
+                        "Act as the debate host/moderator. Use the dependency result summaries in verification_summary as the "
+                        "two debaters' handoff. Write exactly one Markdown file at the assigned owned_path containing: title, "
+                        "chosen topic, affirmative case, negative case, rebuttal summary, host verdict, and concise conclusion. "
+                        "Do not inspect the repository unless required. Return strict JSON matching WorkerResult and include the "
+                        "markdown file in files_changed."
+                    ),
+                },
+            ),
+        ]
+
+    def _single_artifact_tasks(self, mission: MissionSpec) -> list[TaskSpec]:
+        artifact_path = self._artifact_path_for_mission(mission.mission.lower())
+        return [
+            TaskSpec(
+                task_id="write-artifact",
+                title="Write requested markdown artifact",
+                description=mission.mission,
+                type=TaskType.documentation,
+                role="implementer",
+                owned_paths=[artifact_path],
+                read_paths=[],
+                write_enabled=True,
+                metadata={
+                    "confidence": 0.86,
+                    "strategy": "single-artifact",
+                    "max_files_read": 0,
+                    "max_commands": 2,
+                    "max_stdout_lines": 60,
+                    "role_instructions": (
+                        "Create exactly the requested Markdown artifact. If the debate topic is unspecified, choose a clear, "
+                        "interesting topic yourself. Do not inspect the repository unless required. Do not add source code, tests, "
+                        "or unrelated files. Return strict JSON matching WorkerResult and include the markdown file in files_changed."
+                    ),
+                },
+            )
+        ]
+
+    def _simple_tasks(self, mission: MissionSpec) -> list[TaskSpec]:
+        budget = {"max_files_read": 8, "max_commands": 5, "max_stdout_lines": 120}
+        return [
+            TaskSpec(
+                task_id="impl-core",
+                title="Implement focused feature slice",
+                description=mission.mission,
+                type=TaskType.implementation,
+                role="implementer",
+                owned_paths=[
+                    "codex_hive/runtime/generated_core.py",
+                    "docs/generated.md",
+                    "tests/generated_test_placeholder.txt",
+                ],
+                read_paths=["."],
+                write_enabled=True,
+                metadata={"confidence": 0.82, "strategy": "simple", **budget},
+            ),
+            TaskSpec(
+                task_id="test",
+                title="Verify focused feature slice",
+                description="Run focused verification for the implemented feature and report failures without broad repo scans",
+                type=TaskType.test_generation,
+                role="tester",
+                dependencies=["impl-core"],
+                read_paths=["."],
+                write_enabled=False,
+                metadata={"confidence": 0.78, "strategy": "simple", "max_files_read": 6, "max_commands": 4, "max_stdout_lines": 120},
+            ),
+        ]
+
+    def _full_tasks(self) -> list[TaskSpec]:
+        return [
+            TaskSpec(
+                task_id="plan-review",
+                title="Review orchestrator plan",
+                description="Review the orchestrator-provided mission plan for coherence; do not regenerate the DAG",
+                type=TaskType.review,
+                role="planner",
+                read_paths=[".codex-hive/runs"],
+                metadata={"confidence": 0.8, "purpose": "plan_review", "max_files_read": 4, "max_commands": 3, "max_stdout_lines": 80},
+            ),
+            TaskSpec(task_id="scout", title="Scout repository", description="Collect relevant files and commands", type=TaskType.exploration, role="scout", dependencies=["plan-review"], read_paths=["."], metadata={"confidence": 0.75, "max_files_read": 12, "max_commands": 6, "max_stdout_lines": 180}),
+            TaskSpec(task_id="architect", title="Architect solution", description="Define interfaces and structure", type=TaskType.refactor, role="architect", dependencies=["scout"], read_paths=["codex_hive"], metadata={"confidence": 0.72, "max_files_read": 10, "max_commands": 5, "max_stdout_lines": 160}),
+            TaskSpec(task_id="impl-core", title="Implement core runtime", description="Write core code", type=TaskType.implementation, role="implementer", dependencies=["architect"], owned_paths=["codex_hive/runtime/generated_core.py"], read_paths=["codex_hive"], write_enabled=True, metadata={"confidence": 0.8, "max_files_read": 10, "max_commands": 6, "max_stdout_lines": 160}),
+            TaskSpec(task_id="impl-docs", title="Write docs", description="Update docs and README", type=TaskType.documentation, role="implementer", dependencies=["architect"], owned_paths=["docs/generated.md"], read_paths=["docs"], write_enabled=True, metadata={"confidence": 0.78, "max_files_read": 8, "max_commands": 4, "max_stdout_lines": 120}),
+            TaskSpec(task_id="test", title="Verify changes", description="Run verification and tests", type=TaskType.test_generation, role="tester", dependencies=["impl-core", "impl-docs"], owned_paths=["tests/generated_test_placeholder.txt"], write_enabled=True, metadata={"confidence": 0.81, "max_files_read": 8, "max_commands": 6, "max_stdout_lines": 180}),
+            TaskSpec(task_id="review-correctness", title="Correctness review", description="Review implementation", type=TaskType.review, role="reviewer", dependencies=["test"], read_paths=["codex_hive"], metadata={"confidence": 0.67, "max_files_read": 8, "max_commands": 4, "max_stdout_lines": 120}),
+            TaskSpec(task_id="review-security", title="Security review", description="Review security", type=TaskType.review, role="security_reviewer", dependencies=["test"], read_paths=["codex_hive"], metadata={"confidence": 0.71, "max_files_read": 8, "max_commands": 4, "max_stdout_lines": 120}),
+            TaskSpec(task_id="review-performance", title="Performance review", description="Review performance", type=TaskType.review, role="performance_reviewer", dependencies=["test"], read_paths=["codex_hive"], metadata={"confidence": 0.64, "max_files_read": 8, "max_commands": 4, "max_stdout_lines": 120}),
+            TaskSpec(task_id="review-maintainability", title="Maintainability review", description="Review maintainability", type=TaskType.review, role="maintainability_reviewer", dependencies=["test"], read_paths=["codex_hive"], metadata={"confidence": 0.66, "max_files_read": 8, "max_commands": 4, "max_stdout_lines": 120}),
+        ]
 
     async def execute_plan(self, run_id: str, planner_output: PlannerOutput, dry_run: bool = False) -> RunReport:
         run_dir = self.repo_root / self.config.general.artifacts_dir / run_id
@@ -217,7 +431,7 @@ class Orchestrator:
                         payload={"tasks": [task.task_id for task in batch]},
                     )
                 )
-                coroutines = [self._run_task(run_id, planner_output.mission, task, dry_run=dry_run) for task in batch]
+                coroutines = [self._run_task(run_id, planner_output.mission, task, prior_results=results, dry_run=dry_run) for task in batch]
                 batch_results = await asyncio.gather(*coroutines, return_exceptions=True)
                 for task, outcome in zip(batch, batch_results):
                     if isinstance(outcome, Exception):
@@ -348,18 +562,20 @@ class Orchestrator:
         )
         return report
 
-    async def _run_task(self, run_id: str, mission: MissionSpec, task: TaskSpec, dry_run: bool = False) -> WorkerResult:
+    async def _run_task(self, run_id: str, mission: MissionSpec, task: TaskSpec, prior_results: list[WorkerResult] | None = None, dry_run: bool = False) -> WorkerResult:
         agent_id = f"{task.role}-{uuid4().hex[:8]}"
         worktree_path = None
         branch_name = None
         if task.write_enabled:
             worktree_path, branch_name = self.worktrees.create(run_id, task.task_id, task.role)
         assignment = TaskAssignment(run_id=run_id, task=task, agent_id=agent_id, worktree_path=worktree_path, branch_name=branch_name)
+        role_instructions = str(task.metadata.get("role_instructions") or ROLE_PROMPTS.get(task.role, "Return WorkerResult JSON."))
         envelope = WorkerPromptEnvelope(
             assignment=assignment,
             mission=mission,
-            role_instructions=ROLE_PROMPTS.get(task.role, "Return WorkerResult JSON."),
+            role_instructions=role_instructions,
             context_files=task.read_paths,
+            verification_summary=self._dependency_summary(task, prior_results or []),
         )
         self.db.upsert_execution(
             AgentExecutionRecord(
@@ -394,6 +610,21 @@ class Orchestrator:
             cwd = Path(worktree_path) if worktree_path else self.repo_root
             result = await self.dispatcher.dispatch(assignment, envelope, cwd)
         return result
+
+    def _dependency_summary(self, task: TaskSpec, prior_results: list[WorkerResult]) -> str | None:
+        if not task.dependencies:
+            return None
+        by_task_id = {result.task_id: result for result in prior_results}
+        lines = []
+        for dependency in task.dependencies:
+            result = by_task_id.get(dependency)
+            if result is None:
+                continue
+            lines.append(
+                f"{dependency} ({result.role}, {result.status.value}): {result.summary}; "
+                f"files_changed={result.files_changed}; blockers={result.blockers}"
+            )
+        return "\n".join(lines) if lines else None
 
     def _is_cancelled(self, run_id: str) -> bool:
         cancel_marker = self.repo_root / self.config.general.artifacts_dir / run_id / "cancelled"
