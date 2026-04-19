@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import threading
+import time
+from collections import Counter
 from pathlib import Path
 from typing import Annotated
 
@@ -44,6 +47,120 @@ def pick_adapter(config: AppConfig, adapter_name: str):
 
 def render_json(data) -> None:
     console.print_json(to_json(data))
+
+
+def summarize_tasks(db: StateDB, run_id: str) -> dict:
+    tasks = db.list_tasks(run_id)
+    counts = Counter(item.status.value for item in tasks)
+    active = [f"{item.task_id}:{item.status.value}" for item in tasks if item.status in {RunStatus.running, RunStatus.retrying, RunStatus.awaiting_merge, RunStatus.blocked}]
+    completed = counts.get(RunStatus.succeeded.value, 0)
+    total = len(tasks)
+    return {
+        "total": total,
+        "completed": completed,
+        "counts": dict(sorted(counts.items())),
+        "active": active,
+    }
+
+
+def print_run_progress(db: StateDB, run_id: str) -> None:
+    run = db.get_run(run_id)
+    if run is None:
+        console.print(f"Unknown run: {run_id}")
+        return
+    summary = summarize_tasks(db, run_id)
+    console.print(
+        f"[{run.run_id}] {run.status.value} | completed {summary['completed']}/{summary['total']}"
+    )
+    if summary["counts"]:
+        counts = ", ".join(f"{key}={value}" for key, value in summary["counts"].items())
+        console.print(f"Task counts: {counts}")
+    if summary["active"]:
+        console.print(f"Active: {', '.join(summary['active'])}")
+
+
+def format_event_message(event: dict) -> str | None:
+    event_type = event.get("event_type")
+    task_id = event.get("task_id")
+    payload = event.get("payload", {})
+    if event_type == "plan_ready":
+        return f"Plan ready: strategy={payload.get('strategy')} tasks={', '.join(payload.get('tasks', []))}"
+    if event_type == "batch_started":
+        return f"Dispatch batch: {', '.join(payload.get('tasks', []))}"
+    if event_type == "worker_started":
+        suffix = f" role={payload.get('role')}"
+        if payload.get("worktree_path"):
+            suffix += f" worktree={payload.get('worktree_path')}"
+        return f"Worker started: {task_id}{suffix}"
+    if event_type == "worker_completed":
+        return f"Worker completed: {task_id} status={payload.get('status')}"
+    if event_type == "worker_failed":
+        return f"Worker failed: {task_id} error={payload.get('error')}"
+    if event_type == "consensus_ready":
+        return f"Consensus ready: findings={payload.get('finding_count')} overall_score={payload.get('overall_score')}"
+    if event_type == "debate_applied":
+        return f"Debate applied: selected={payload.get('selected_task_id')} rounds={payload.get('debate_rounds')}"
+    if event_type == "merge_planned":
+        return f"Merge planned: branches={len(payload.get('branches', []))} actions={len(payload.get('actions', []))}"
+    if event_type == "merge_completed":
+        return f"Merge completed: files={', '.join(payload.get('merged_files', [])) or 'none'}"
+    if event_type == "verification_completed":
+        return f"Verification completed: returncodes={payload.get('returncodes', [])}"
+    if event_type == "mission_checked":
+        return f"Mission checked: passed={payload.get('passed')} score={payload.get('goal_alignment_score')}"
+    if event_type == "run_completed":
+        return f"Run completed: status={payload.get('status')}"
+    return None
+
+
+def start_progress_reporter(db_path: Path, eventlog_path: Path, run_id: str) -> tuple[threading.Event, threading.Thread]:
+    stop_event = threading.Event()
+
+    def worker() -> None:
+        db = StateDB(db_path)
+        seen_events = 0
+        last_snapshot: tuple | None = None
+        try:
+            while not stop_event.is_set():
+                if eventlog_path.exists():
+                    lines = [line for line in eventlog_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                    for line in lines[seen_events:]:
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if event.get("run_id") != run_id:
+                            continue
+                        message = format_event_message(event)
+                        if message:
+                            console.print(f"[{run_id}] {message}")
+                    seen_events = len(lines)
+                run = db.get_run(run_id)
+                if run is not None:
+                    summary = summarize_tasks(db, run_id)
+                    snapshot = (
+                        run.status.value,
+                        summary["completed"],
+                        summary["total"],
+                        tuple(summary["active"]),
+                        tuple(sorted(summary["counts"].items())),
+                    )
+                    if snapshot != last_snapshot:
+                        counts = ", ".join(f"{key}={value}" for key, value in summary["counts"].items()) or "no tasks yet"
+                        line = f"[{run_id}] {run.status.value} | completed {summary['completed']}/{summary['total']} | {counts}"
+                        if summary["active"]:
+                            line += f" | active: {', '.join(summary['active'])}"
+                        console.print(line)
+                        last_snapshot = snapshot
+                    if run.status in {RunStatus.succeeded, RunStatus.failed, RunStatus.cancelled, RunStatus.escalated}:
+                        break
+                time.sleep(1.0)
+        finally:
+            db.connection.close()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return stop_event, thread
 
 
 @app.command()
@@ -101,7 +218,20 @@ def run(
     orchestrator = Orchestrator(root, config, db, eventlog, chosen_adapter)
     mission = orchestrator.parse_mission(task)
     plan_output = orchestrator.plan(mission, strategy)
-    report = asyncio.run(orchestrator.execute_plan(orchestrator.create_run_id(task), plan_output, dry_run=dry_run))
+    run_id = orchestrator.create_run_id(task)
+    stop_event = None
+    reporter_thread = None
+    if not json_output:
+        console.print(f"Starting run {run_id}")
+        console.print(f"Strategy: {plan_output.strategy}")
+        console.print(f"Tasks: {', '.join(item.task_id for item in plan_output.tasks)}")
+        stop_event, reporter_thread = start_progress_reporter(db.path, eventlog.path, run_id)
+    try:
+        report = asyncio.run(orchestrator.execute_plan(run_id, plan_output, dry_run=dry_run))
+    finally:
+        if stop_event is not None and reporter_thread is not None:
+            stop_event.set()
+            reporter_thread.join(timeout=2)
     payload = report.model_dump(mode="json")
     if json_output:
         render_json(payload)
@@ -113,17 +243,44 @@ def run(
 @app.command()
 def status(
     repo_root: Annotated[Path | None, typer.Option("--repo-root")] = None,
+    run_id: Annotated[str | None, typer.Option("--run-id")] = None,
+    tasks: Annotated[bool, typer.Option("--tasks")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     root = resolve_repo_root(repo_root)
     _, db, _ = load_app(root)
+    if run_id is not None:
+        record = db.get_run(run_id)
+        if record is None:
+            raise typer.BadParameter(f"Unknown run: {run_id}")
+        task_rows = db.list_tasks(run_id)
+        if json_output:
+            payload = {
+                "run": record.model_dump(mode="json"),
+                "tasks": [item.model_dump(mode="json") for item in task_rows],
+                "summary": summarize_tasks(db, run_id),
+            }
+            render_json(payload)
+            return
+        print_run_progress(db, run_id)
+        table = Table("Task ID", "Role", "Status")
+        for item in task_rows:
+            table.add_row(item.task_id, item.role, item.status.value)
+        console.print(table)
+        return
     runs = db.list_runs()
     if json_output:
         render_json([item.model_dump(mode="json") for item in runs])
         return
-    table = Table("Run ID", "Status", "Strategy", "Mission")
+    table = Table("Run ID", "Status", "Strategy", "Mission", "Progress")
     for item in runs:
-        table.add_row(item.run_id, item.status.value, item.strategy, item.mission)
+        progress = "-"
+        if tasks:
+            summary = summarize_tasks(db, item.run_id)
+            progress = f"{summary['completed']}/{summary['total']}"
+            if summary["active"]:
+                progress += f" active={','.join(summary['active'])}"
+        table.add_row(item.run_id, item.status.value, item.strategy, item.mission, progress)
     console.print(table)
 
 

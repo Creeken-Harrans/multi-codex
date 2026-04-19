@@ -31,6 +31,7 @@ class CodexCLIAdapter(AgentAdapter):
         result = await run_command(command, cwd=cwd, timeout=self.config.general.default_timeout_seconds)
         if result.returncode != 0:
             raise RetryableAgentError(result.stderr or result.stdout)
+        events = self._parse_jsonl_events(result.stdout)
         try:
             payload = json.loads(result.stdout.strip() or "{}")
         except json.JSONDecodeError:
@@ -39,7 +40,7 @@ class CodexCLIAdapter(AgentAdapter):
                 "agent_id": assignment.agent_id,
                 "role": assignment.task.role,
                 "status": WorkerStatus.succeeded.value,
-                "summary": result.stdout.strip() or "codex exec completed",
+                "summary": self._extract_summary(events) or result.stdout.strip() or "codex exec completed",
                 "confidence": 0.5,
             }
         if "task_id" not in payload:
@@ -48,4 +49,35 @@ class CodexCLIAdapter(AgentAdapter):
             payload["agent_id"] = assignment.agent_id
         if "role" not in payload:
             payload["role"] = assignment.task.role
+        payload.setdefault("metadata", {})
+        payload["metadata"]["trace"] = {
+            "adapter": self.name,
+            "cwd": str(cwd),
+            "command": command,
+            "input_envelope": envelope.model_dump(mode="json"),
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "events": events,
+            "final_message": self._extract_summary(events),
+        }
         return WorkerResult.model_validate(payload)
+
+    def _parse_jsonl_events(self, stdout: str) -> list[dict]:
+        parsed: list[dict] = []
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed.append(json.loads(line))
+            except json.JSONDecodeError:
+                parsed.append({"type": "raw_text", "text": line})
+        return parsed
+
+    def _extract_summary(self, events: list[dict]) -> str | None:
+        for item in reversed(events):
+            if item.get("type") == "item.completed":
+                payload = item.get("item", {})
+                if payload.get("type") == "agent_message":
+                    return payload.get("text")
+        return None

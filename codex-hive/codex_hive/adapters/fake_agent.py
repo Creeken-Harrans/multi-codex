@@ -59,6 +59,15 @@ class FakeAgentAdapter(AgentAdapter):
                     source_agent_id=assignment.agent_id,
                 )
             )
+        reply_payload = {
+            "task_id": task.task_id,
+            "agent_id": assignment.agent_id,
+            "role": task.role,
+            "status": WorkerStatus.succeeded.value,
+            "summary": f"Completed {task.title}",
+            "files_changed": files_changed,
+            "findings": [item.model_dump(mode="json") for item in findings],
+        }
         return WorkerResult(
             task_id=task.task_id,
             agent_id=assignment.agent_id,
@@ -83,4 +92,19 @@ class FakeAgentAdapter(AgentAdapter):
                 files_changed=files_changed,
                 patch_summary=[f"updated {path}" for path in files_changed],
             ) if files_changed else None,
+            metadata={
+                "trace": {
+                    "adapter": self.name,
+                    "cwd": str(cwd),
+                    "command": ["fake-agent", "run"],
+                    "input_envelope": envelope.model_dump(mode="json"),
+                    "reply": reply_payload,
+                    "stdout": json.dumps(reply_payload, ensure_ascii=False),
+                    "stderr": "",
+                    "events": [
+                        {"type": "input.received", "task_id": task.task_id, "role": task.role},
+                        {"type": "reply.generated", "summary": f"Completed {task.title}"},
+                    ],
+                }
+            },
         )

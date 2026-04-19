@@ -160,6 +160,16 @@ class Orchestrator:
             artifacts_dir=str(run_dir),
         )
         self.db.upsert_run(run_record)
+        self.event_logger.append(
+            EventRecord(
+                event_type="plan_ready",
+                run_id=run_id,
+                payload={
+                    "strategy": planner_output.strategy,
+                    "tasks": [task.task_id for task in planner_output.tasks],
+                },
+            )
+        )
         artifact_writer.write_report(
             RunReport(
                 run_id=run_id,
@@ -200,6 +210,13 @@ class Orchestrator:
             for batch in batches:
                 if self._is_cancelled(run_id):
                     break
+                self.event_logger.append(
+                    EventRecord(
+                        event_type="batch_started",
+                        run_id=run_id,
+                        payload={"tasks": [task.task_id for task in batch]},
+                    )
+                )
                 coroutines = [self._run_task(run_id, planner_output.mission, task, dry_run=dry_run) for task in batch]
                 batch_results = await asyncio.gather(*coroutines, return_exceptions=True)
                 for task, outcome in zip(batch, batch_results):
@@ -228,16 +245,61 @@ class Orchestrator:
             confirmed_threshold=self.config.consensus.confirmed_threshold,
             needs_verification_threshold=self.config.consensus.needs_verification_threshold,
         )
+        self.event_logger.append(
+            EventRecord(
+                event_type="consensus_ready",
+                run_id=run_id,
+                payload={"finding_count": len(consensus.findings), "overall_score": consensus.overall_score},
+            )
+        )
         if planner_output.strategy in {"competitive-generation", "debate"} and len([item for item in results if item.role == "implementer"]) > 1:
             best = judge_best([item for item in results if item.role == "implementer"])
             consensus = apply_debate_round(consensus, f"Selected {best.task_id} as best candidate.")
+            self.event_logger.append(
+                EventRecord(
+                    event_type="debate_applied",
+                    run_id=run_id,
+                    payload={"selected_task_id": best.task_id, "debate_rounds": consensus.debate_rounds},
+                )
+            )
 
         merge_plan = self.merger.plan(run_id, results)
+        self.event_logger.append(
+            EventRecord(
+                event_type="merge_planned",
+                run_id=run_id,
+                payload={"branches": merge_plan.branch_order, "actions": merge_plan.merge_actions},
+            )
+        )
         async def _integrate():
             return self.merger.integrate([result for result in results if result.status == WorkerStatus.succeeded])
         merged_files = [] if self._is_cancelled(run_id) else await self.git_queue.run(_integrate)
+        self.event_logger.append(
+            EventRecord(
+                event_type="merge_completed",
+                run_id=run_id,
+                payload={"merged_files": merged_files},
+            )
+        )
         verification_results = [] if self._is_cancelled(run_id) else await run_verification(self.repo_root, detect_commands(self.repo_root))
+        self.event_logger.append(
+            EventRecord(
+                event_type="verification_completed",
+                run_id=run_id,
+                payload={
+                    "commands": [item.command for item in verification_results],
+                    "returncodes": [item.returncode for item in verification_results],
+                },
+            )
+        )
         mission_check = self.mission_keeper.check(planner_output.mission, results)
+        self.event_logger.append(
+            EventRecord(
+                event_type="mission_checked",
+                run_id=run_id,
+                payload=mission_check.model_dump(mode="json"),
+            )
+        )
         if self._is_cancelled(run_id):
             status = RunStatus.cancelled
         elif mission_check.passed and all(item_status == RunStatus.succeeded for item_status in statuses.values()):
@@ -311,7 +373,21 @@ class Orchestrator:
                 branch_name=branch_name,
             )
         )
-        self.event_logger.append(EventRecord(event_type="worker_started", run_id=run_id, task_id=task.task_id, payload={"agent_id": agent_id, "role": task.role}))
+        self.event_logger.append(
+            EventRecord(
+                event_type="worker_started",
+                run_id=run_id,
+                task_id=task.task_id,
+                payload={
+                    "agent_id": agent_id,
+                    "role": task.role,
+                    "write_enabled": task.write_enabled,
+                    "dependencies": task.dependencies,
+                    "worktree_path": worktree_path,
+                    "branch_name": branch_name,
+                },
+            )
+        )
         if dry_run:
             result = WorkerResult(task_id=task.task_id, agent_id=agent_id, role=task.role, status=WorkerStatus.succeeded, summary="Dry run only", confidence=1.0, worktree_path=worktree_path, branch_name=branch_name)
         else:
