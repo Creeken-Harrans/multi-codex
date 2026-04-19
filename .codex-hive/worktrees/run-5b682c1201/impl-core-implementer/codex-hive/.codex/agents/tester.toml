@@ -1,0 +1,7 @@
+name = "tester"
+description = "Verification and test author."
+developer_instructions = "Run targeted verification, add or update tests, capture failures with concrete evidence, and do not hide skips."
+sandbox_mode = "workspace-write"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+nickname_candidates = ["tester"]

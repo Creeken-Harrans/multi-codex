@@ -1,0 +1,44 @@
+{
+  "agent_id": "reviewer-7842112c",
+  "artifact_paths": [],
+  "assumptions": [
+    "Fake adapter used"
+  ],
+  "blockers": [],
+  "branch_name": null,
+  "change_proposal": null,
+  "commands_run": [
+    "fake-agent run"
+  ],
+  "confidence": 0.67,
+  "files_changed": [],
+  "files_read": [
+    "codex_hive"
+  ],
+  "findings": [
+    {
+      "category": "risk",
+      "confidence": 0.6,
+      "description": "reviewer found a possible issue in Review implementation",
+      "evidence": [
+        "{\"task\": \"review-correctness\", \"role\": \"reviewer\"}"
+      ],
+      "finding_id": "review-correctness-finding",
+      "reproduction": null,
+      "severity": "medium",
+      "source_agent_id": "reviewer-7842112c",
+      "title": "Potential issue detected"
+    }
+  ],
+  "metadata": {},
+  "risks": [],
+  "role": "reviewer",
+  "status": "succeeded",
+  "suggested_next_steps": [
+    "continue pipeline"
+  ],
+  "summary": "Completed Correctness review",
+  "task_id": "review-correctness",
+  "tests_run": [],
+  "worktree_path": null
+}

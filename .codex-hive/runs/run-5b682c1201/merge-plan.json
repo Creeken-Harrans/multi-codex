@@ -1,0 +1,17 @@
+{
+  "branch_order": [
+    "codex-hive/run-5b682c1201/impl-core/implementer",
+    "codex-hive/run-5b682c1201/impl-docs/implementer",
+    "codex-hive/run-5b682c1201/test/tester"
+  ],
+  "conflicts": [],
+  "merge_actions": [
+    "merge codex-hive/run-5b682c1201/impl-core/implementer",
+    "merge codex-hive/run-5b682c1201/impl-docs/implementer",
+    "merge codex-hive/run-5b682c1201/test/tester"
+  ],
+  "run_id": "run-5b682c1201",
+  "verification_required": [
+    "run verification suite after merge"
+  ]
+}

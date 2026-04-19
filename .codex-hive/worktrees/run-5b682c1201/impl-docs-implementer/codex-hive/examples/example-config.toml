@@ -1,0 +1,11 @@
+[general]
+artifacts_dir = ".codex-hive/runs"
+worktree_root = ".codex-hive/worktrees"
+max_parallel_agents = 4
+default_strategy = "auto"
+default_timeout_seconds = 1200
+
+[codex]
+binary = "codex"
+default_model = "gpt-5.4"
+default_reasoning_effort = "high"

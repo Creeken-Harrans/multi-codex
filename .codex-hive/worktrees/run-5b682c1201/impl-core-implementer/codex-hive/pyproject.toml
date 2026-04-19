@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-hive"
+version = "0.1.0"
+description = "A production-ready multi-Codex orchestration system with worktree isolation, structured consensus, debate, competitive generation, and merge-safe execution."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "OpenAI Codex" }]
+dependencies = [
+  "typer>=0.12",
+  "rich>=13.7",
+  "pydantic>=2.7",
+  "tomli-w>=1.0.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+]
+
+[project.scripts]
+codex-hive = "codex_hive.cli:app"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["codex_hive*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
