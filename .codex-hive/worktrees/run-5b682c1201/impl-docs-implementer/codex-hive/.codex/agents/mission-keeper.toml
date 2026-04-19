@@ -1,7 +1,0 @@
-name = "mission_keeper"
-description = "Goal integrity and drift detection."
-developer_instructions = "Check scope, out-of-scope, acceptance coverage, and unjustified extra changes. Never implement features directly."
-sandbox_mode = "read-only"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-nickname_candidates = ["goal-guard", "keeper"]

@@ -147,28 +147,59 @@ class Orchestrator:
     async def execute_plan(self, run_id: str, planner_output: PlannerOutput, dry_run: bool = False) -> RunReport:
         run_dir = self.repo_root / self.config.general.artifacts_dir / run_id
         artifact_writer = ArtifactWriter(run_dir)
+        existing_run = self.db.get_run(run_id)
+        resumed_statuses, resumed_results = self._load_resume_state(run_id)
         run_record = RunRecord(
             run_id=run_id,
             mission=planner_output.mission.mission,
             strategy=planner_output.strategy,
             status=RunStatus.running,
+            created_at=existing_run.created_at if existing_run else datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             repo_root=str(self.repo_root),
             artifacts_dir=str(run_dir),
         )
         self.db.upsert_run(run_record)
-        self.event_logger.append(EventRecord(event_type="run_created", run_id=run_id, payload={"strategy": planner_output.strategy}))
+        artifact_writer.write_report(
+            RunReport(
+                run_id=run_id,
+                mission=planner_output.mission,
+                status=RunStatus.running,
+                strategy=planner_output.strategy,
+                tasks=planner_output.tasks,
+                worker_results=resumed_results,
+            ),
+            [],
+            planner_output=planner_output,
+            events=[],
+        )
+        if existing_run is None:
+            self.event_logger.append(EventRecord(event_type="run_created", run_id=run_id, payload={"strategy": planner_output.strategy}))
+        else:
+            self.event_logger.append(EventRecord(event_type="run_resumed", run_id=run_id, payload={"strategy": planner_output.strategy}))
         for task in planner_output.tasks:
-            self.db.upsert_task(StoredTaskRecord(run_id=run_id, task_id=task.task_id, role=task.role, status=RunStatus.pending, payload=task.model_dump(mode="json")))
+            payload = task.model_dump(mode="json")
+            status = resumed_statuses.get(task.task_id, RunStatus.pending)
+            if status == RunStatus.succeeded:
+                for result in resumed_results:
+                    if result.task_id == task.task_id:
+                        payload = result.model_dump(mode="json")
+                        break
+            self.db.upsert_task(StoredTaskRecord(run_id=run_id, task_id=task.task_id, role=task.role, status=status, payload=payload))
 
-        statuses = {task.task_id: RunStatus.pending for task in planner_output.tasks}
-        results: list[WorkerResult] = []
+        statuses = {task.task_id: resumed_statuses.get(task.task_id, RunStatus.pending) for task in planner_output.tasks}
+        results: list[WorkerResult] = list(resumed_results)
         ordered = self.scheduler.order(planner_output.tasks, planner_output.ownership)
         while True:
+            if self._is_cancelled(run_id):
+                break
             ready = [task for task in ordered if statuses[task.task_id] in {RunStatus.pending, RunStatus.ready} and all(statuses.get(dep) == RunStatus.succeeded for dep in task.dependencies)]
             if not ready:
                 break
             batches = self.scheduler.batch(ready, self.config.general.max_parallel_agents)
             for batch in batches:
+                if self._is_cancelled(run_id):
+                    break
                 coroutines = [self._run_task(run_id, planner_output.mission, task, dry_run=dry_run) for task in batch]
                 batch_results = await asyncio.gather(*coroutines, return_exceptions=True)
                 for task, outcome in zip(batch, batch_results):
@@ -181,6 +212,8 @@ class Orchestrator:
                         results.append(outcome)
                         self.db.upsert_task(StoredTaskRecord(run_id=run_id, task_id=task.task_id, role=task.role, status=statuses[task.task_id], payload=outcome.model_dump(mode="json")))
                         self.event_logger.append(EventRecord(event_type="worker_completed", run_id=run_id, task_id=task.task_id, payload={"status": outcome.status.value}))
+                if self._is_cancelled(run_id):
+                    break
                 if any(status == RunStatus.failed for status in statuses.values()):
                     break
             if any(status == RunStatus.failed for status in statuses.values()):
@@ -202,10 +235,17 @@ class Orchestrator:
         merge_plan = self.merger.plan(run_id, results)
         async def _integrate():
             return self.merger.integrate([result for result in results if result.status == WorkerStatus.succeeded])
-        merged_files = await self.git_queue.run(_integrate)
-        verification_results = await run_verification(self.repo_root, detect_commands(self.repo_root))
+        merged_files = [] if self._is_cancelled(run_id) else await self.git_queue.run(_integrate)
+        verification_results = [] if self._is_cancelled(run_id) else await run_verification(self.repo_root, detect_commands(self.repo_root))
         mission_check = self.mission_keeper.check(planner_output.mission, results)
-        status = RunStatus.succeeded if mission_check.passed and all(status == RunStatus.succeeded for status in statuses.values()) else RunStatus.escalated if not mission_check.passed else RunStatus.failed
+        if self._is_cancelled(run_id):
+            status = RunStatus.cancelled
+        elif mission_check.passed and all(item_status == RunStatus.succeeded for item_status in statuses.values()):
+            status = RunStatus.succeeded
+        elif not mission_check.passed:
+            status = RunStatus.escalated
+        else:
+            status = RunStatus.failed
         report = RunReport(
             run_id=run_id,
             mission=planner_output.mission,
@@ -219,7 +259,12 @@ class Orchestrator:
             mission_check=mission_check,
             final_summary=f"Merged {len(merged_files)} files. Mission check={'pass' if mission_check.passed else 'fail'}.",
         )
-        artifact_writer.write_report(report, verification_results)
+        artifact_writer.write_report(
+            report,
+            verification_results,
+            planner_output=planner_output,
+            events=self.event_logger.read_run(run_id),
+        )
         self.db.upsert_run(
             RunRecord(
                 run_id=run_id,
@@ -233,6 +278,12 @@ class Orchestrator:
             )
         )
         self.event_logger.append(EventRecord(event_type="run_completed", run_id=run_id, payload={"status": status.value}))
+        artifact_writer.write_report(
+            report,
+            verification_results,
+            planner_output=planner_output,
+            events=self.event_logger.read_run(run_id),
+        )
         return report
 
     async def _run_task(self, run_id: str, mission: MissionSpec, task: TaskSpec, dry_run: bool = False) -> WorkerResult:
@@ -267,3 +318,23 @@ class Orchestrator:
             cwd = Path(worktree_path) if worktree_path else self.repo_root
             result = await self.dispatcher.dispatch(assignment, envelope, cwd)
         return result
+
+    def _is_cancelled(self, run_id: str) -> bool:
+        cancel_marker = self.repo_root / self.config.general.artifacts_dir / run_id / "cancelled"
+        if cancel_marker.exists():
+            return True
+        record = self.db.get_run(run_id)
+        return record is not None and record.status == RunStatus.cancelled
+
+    def _load_resume_state(self, run_id: str) -> tuple[dict[str, RunStatus], list[WorkerResult]]:
+        statuses: dict[str, RunStatus] = {}
+        results: list[WorkerResult] = []
+        for record in self.db.list_tasks(run_id):
+            status = record.status
+            if status in {RunStatus.failed, RunStatus.cancelled, RunStatus.blocked, RunStatus.retrying}:
+                statuses[record.task_id] = RunStatus.pending
+                continue
+            statuses[record.task_id] = status
+            if status == RunStatus.succeeded and "agent_id" in record.payload:
+                results.append(WorkerResult.model_validate(record.payload))
+        return statuses, results

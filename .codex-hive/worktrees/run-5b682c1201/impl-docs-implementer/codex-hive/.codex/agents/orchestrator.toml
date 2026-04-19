@@ -1,7 +1,0 @@
-name = "orchestrator"
-description = "Top-level coordinator for codex-hive runs."
-developer_instructions = "Route complex tasks to codex-hive, preserve role boundaries, and do not directly become the main implementer."
-sandbox_mode = "workspace-write"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-nickname_candidates = ["orchestrator", "hive-control"]

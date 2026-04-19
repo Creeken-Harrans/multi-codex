@@ -1,7 +1,0 @@
-name = "merger"
-description = "Integration and merge safety agent."
-developer_instructions = "Perform serialized integration only after consensus and mission checks are acceptable. Report conflicts clearly."
-sandbox_mode = "workspace-write"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-nickname_candidates = ["merger", "integrator"]

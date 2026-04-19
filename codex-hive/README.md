@@ -1,92 +1,156 @@
 # codex-hive
 
-**A production-ready multi-Codex orchestration system with worktree isolation, structured consensus, debate, competitive generation, and merge-safe execution.**
+`codex-hive` is a multi-agent orchestration CLI for code tasks. It plans a mission, fans work out to role-specific agents, isolates write tasks in native Git worktrees, serializes integration, runs verification, and writes run artifacts you can inspect or resume later.
 
-`codex-hive` is a hybrid system:
+For a detailed Chinese walkthrough, see [explain.md](explain.md).
 
-- Native Codex collaboration layer: `AGENTS.md`, `.codex/agents/*.toml`, skills, and `codex exec` compatibility.
-- External orchestration layer: Python CLI/runtime, task DAG execution, worktree isolation, SQLite state, JSONL events, consensus scoring, merge planning, and recovery.
+## What It Does
 
-The system is built so one top-level Codex, or a human at the terminal, can issue a single command such as:
+- Single entrypoint: `codex-hive run "<task>"`
+- Native Git worktree isolation for write-enabled tasks
+- Structured run state in SQLite and JSONL
+- Review fan-out plus consensus scoring
+- Mission drift and acceptance checks before final success
+- Fake adapter for deterministic end-to-end tests
+- Codex CLI adapter for `codex exec --json`
 
-```bash
-codex-hive run "Implement OAuth login with tests and docs"
-```
+## Requirements
 
-The runtime then handles mission parsing, planning, role routing, parallel agent execution, structured review, mission drift detection, artifacts, and resumable run state.
-
-## Why Hybrid
-
-Native subagents are strong for bounded, read-heavy, short-lived tasks. They are weaker for long write-heavy pipelines where branch/worktree safety, crash recovery, and merge serialization matter. `codex-hive` keeps both:
-
-- Use Codex-native agents for local repo exploration and lightweight delegation.
-- Use `codex-hive` worktree orchestration for large parallel implementation, competitive generation, debate, and merge-safe execution.
-
-## Features
-
-- CLI commands: `init`, `run`, `plan`, `status`, `inspect`, `resume`, `cancel`, `merge`, `clean`, `doctor`, `agents list`, `config show`, `export-report`, plus `review`, `debate`, `judge`, `benchmark`.
-- Task DAG execution with statuses: `pending`, `ready`, `blocked`, `running`, `retrying`, `awaiting-approval`, `awaiting-merge`, `succeeded`, `failed`, `cancelled`, `escalated`.
-- Strategies: map-reduce, role-split review, slice-split implementation, competitive generation, debate, and plan-then-execute council.
-- Structured schemas with Pydantic v2.
-- Consensus engine with agreement ratio, evidence weighting, reliability weighting, and verification levels.
-- Mission Keeper with scope drift and acceptance coverage checks.
-- Worktree manager and serialized git op queue.
-- Fake adapter for testable orchestration without Codex installed.
-- Codex CLI adapter for `codex exec`.
-- SQLite run/task/execution state plus JSONL event log.
-- Human-readable and machine-readable artifacts.
+- Python 3.11+
+- Git
+- A Git repository with at least one commit before running write-heavy flows
+- Optional: `codex` in `PATH` if you want `--adapter codex`
 
 ## Installation
 
 ```bash
 cd /home/Creeken/Paper/codex-test/codex-hive
-/home/Creeken/miniconda3/envs/pytorch/bin/python -m pip install -e .[dev]
+python3 -m pip install -e ".[dev]"
+```
+
+Verify the CLI:
+
+```bash
+codex-hive --help
 ```
 
 ## Quick Start
 
-```bash
-codex-hive init
-codex-hive run "Build a feature end-to-end" --adapter fake
-codex-hive status
-codex-hive inspect <run-id>
-```
-
-To use the real Codex CLI adapter:
+Initialize state in the current repository:
 
 ```bash
-codex-hive run "Refactor auth flow" --adapter codex
+codex-hive init --repo-root .
 ```
 
-## Common Workflows
-
-### Large implementation
+Run a full fake end-to-end flow:
 
 ```bash
-codex-hive run "Implement OAuth login with tests and docs"
+codex-hive run "Implement feature with tests and docs" --repo-root . --adapter fake
 ```
 
-This uses mission parsing, plan-then-execute, isolated worktrees for write-heavy tasks, review fan-out, consensus, merge planning, verification, and a final mission fidelity check.
-
-### Competitive bug fixing
+Inspect state:
 
 ```bash
-codex-hive run "Fix this flaky test in CI" --strategy competitive-generation
+codex-hive status --repo-root . --json
+codex-hive inspect <run-id> --repo-root . --json
+codex-hive doctor --repo-root . --json
 ```
 
-This creates competing implementers, judges their outcomes, and merges the strongest candidate into the integration step.
-
-### Strict review
+Use the real Codex adapter:
 
 ```bash
-codex-hive review "Review current branch for correctness, security, performance, and maintainability"
+codex-hive run "Refactor auth flow" --repo-root . --adapter codex
 ```
 
-This triggers parallel reviewers, finding deduplication, consensus scoring, and optional debate escalation.
+## Core Commands
+
+- `init`: create `.codex-hive/` state directories and write `codex-hive.toml`
+- `plan`: build the mission plan without executing workers
+- `run`: execute a mission end-to-end
+- `status`: list known runs from SQLite state
+- `inspect`: read one run artifact bundle
+- `resume`: continue a resumable run
+- `cancel`: mark a run cancelled and drop a cancellation marker
+- `merge`: show the merge plan for a run
+- `clean`: remove `.codex-hive/`
+- `doctor`: check local readiness
+- `agents list`: print configured agent profiles
+- `config show`: print resolved config
+- `export-report`: export `run.json` to a target path
+- `review`, `debate`, `judge`, `benchmark`: convenience wrappers around `run`
+
+## Typical Run Lifecycle
+
+1. `codex-hive init` creates:
+
+```text
+.codex-hive/
+  runs/
+  worktrees/
+codex-hive.toml
+```
+
+2. `codex-hive run ...` does the following:
+
+- Parse the mission into a `MissionSpec`
+- Build a `PlannerOutput` with task DAG, strategy, and ownership hints
+- Create a run directory under `.codex-hive/runs/<run-id>/`
+- Store run/task state in `.codex-hive/state.db`
+- Append lifecycle events to `.codex-hive/events.jsonl`
+- Create native Git worktrees for write-enabled tasks
+- Dispatch workers through the chosen adapter
+- Commit worktree changes and cherry-pick them back under a serialized Git lock
+- Run auto-detected verification commands
+- Run Mission Keeper checks
+- Write final artifacts
+
+3. A completed run writes:
+
+```text
+.codex-hive/runs/<run-id>/
+  run.json
+  mission.json
+  plan.json
+  consensus.json
+  merge-plan.json
+  mission-check.json
+  summary.md
+  final-report.md
+  events.jsonl
+  tasks/
+    <task-id>.json
+```
+
+Global state also lives here:
+
+```text
+.codex-hive/state.db
+.codex-hive/events.jsonl
+.codex-hive/worktrees/
+```
+
+## Strategies
+
+- `plan-then-execute-council`
+- `role-split-review`
+- `slice-split-implementation`
+- `competitive-generation`
+- `debate`
+- `map-reduce`
+
+If you do not pass `--strategy`, the planner picks one heuristically from the mission text.
+
+## Safety Model
+
+- Write tasks run in native Git worktrees, not in-place
+- Integration is serialized through a lock-backed Git operation queue
+- Integration uses real Git commits plus cherry-pick, not file copy merge
+- Ownership analysis can reduce parallelism when write paths overlap
+- Mission Keeper can downgrade a run to `escalated` when acceptance or scope checks fail
 
 ## Configuration
 
-Repository config lives in `codex-hive.toml`. Example defaults:
+Repository config lives in `codex-hive.toml`. Main knobs:
 
 ```toml
 [general]
@@ -97,62 +161,27 @@ default_strategy = "auto"
 default_timeout_seconds = 1800
 ```
 
-See [docs/config.md](docs/config.md) for the full surface.
-
-## Artifacts
-
-Each run writes:
-
-```text
-.codex-hive/runs/<run-id>/
-  run.json
-  summary.md
-  mission.json
-  consensus.json
-  merge-plan.json
-  mission-check.json
-  final-report.md
-  tasks/
-```
-
-The state database is `.codex-hive/state.db` and the event stream is `.codex-hive/events.jsonl`.
-
-## Recovery
-
-- `codex-hive resume <run-id>` replays the mission with stored run metadata.
-- Worktrees live under `.codex-hive/worktrees/`.
-- `codex-hive clean` removes the local state directory.
-- `codex-hive doctor` checks key dependencies and local state readiness.
-
-See [docs/recovery.md](docs/recovery.md).
-
-## Safety
-
-- Write-heavy tasks use isolated worktrees.
-- High-risk git operations are serialized via a lock-backed git op queue.
-- Ownership analysis detects overlapping write paths and degrades parallelism.
-- Mission Keeper blocks completion if scope drift or acceptance gaps are detected.
-- Reviewers are separated from implementers through structured worker envelopes.
-
-See [docs/safety.md](docs/safety.md).
+See [docs/config.md](docs/config.md), [docs/architecture.md](docs/architecture.md), and [docs/recovery.md](docs/recovery.md).
 
 ## Testing
 
+Run the full test suite:
+
 ```bash
-make test
+pytest
 ```
 
-The fake adapter powers end-to-end integration tests without requiring Codex. If you have `codex` installed, you can manually run smoke tests against the real adapter.
+The fake adapter is enough for end-to-end tests. It creates deterministic files in isolated worktrees and exercises the orchestration stack without requiring the real Codex CLI.
 
 ## Native Codex Integration
 
-- [AGENTS.md](AGENTS.md) defines repository-level operating instructions.
-- `.codex/config.toml.example` shows how to expose these agents to Codex.
-- `.codex/agents/*.toml` define role-specific personas.
-- `.codex/skills/team-mode/` teaches a top-level Codex when to route tasks through `codex-hive`.
+- [AGENTS.md](AGENTS.md)
+- [.codex/config.toml.example](.codex/config.toml.example)
+- `.codex/agents/*.toml`
+- `.codex/skills/team-mode/`
 
-## Current v1 Boundaries
+## Current Boundaries
 
-- Worktree creation is filesystem-copy-based for portability in tests; Git-native worktree plumbing can be layered in later.
-- Merge integration is safe file copy from isolated worktrees rather than full branch merge logic.
-- Real `codex exec` output normalization is intentionally simple and expects JSON-friendly output when possible.
+- Planning is still heuristic, not LLM-generated planning logic
+- `resume` restores succeeded tasks and reruns incomplete ones, but it is not yet a full mid-command checkpoint resume for external processes
+- Consensus, debate, and judge flows are usable, but still lightweight compared with a production review platform

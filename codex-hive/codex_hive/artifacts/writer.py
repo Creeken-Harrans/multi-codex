@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from ..models import ArtifactIndex, RunReport
+from ..models import ArtifactIndex, EventRecord, PlannerOutput, RunReport
 from ..utils.paths import ensure_dir
 from ..utils.serialization import write_json
 from .renderers import render_final_report, render_summary
@@ -17,12 +18,21 @@ class ArtifactWriter:
         self.agents_dir = ensure_dir(self.run_dir / "agents")
         self.raw_dir = ensure_dir(self.run_dir / "raw")
 
-    def write_report(self, report: RunReport, verification_results) -> ArtifactIndex:
+    def write_report(
+        self,
+        report: RunReport,
+        verification_results,
+        planner_output: PlannerOutput | None = None,
+        events: list[EventRecord] | None = None,
+    ) -> ArtifactIndex:
         files: list[str] = []
         write_json(self.run_dir / "run.json", report.model_dump(mode="json"))
         files.append("run.json")
         write_json(self.run_dir / "mission.json", report.mission.model_dump(mode="json"))
         files.append("mission.json")
+        if planner_output is not None:
+            write_json(self.run_dir / "plan.json", planner_output.model_dump(mode="json"))
+            files.append("plan.json")
         if report.consensus_report:
             write_json(self.run_dir / "consensus.json", report.consensus_report.model_dump(mode="json"))
             files.append("consensus.json")
@@ -38,6 +48,12 @@ class ArtifactWriter:
         final_report = render_final_report(report, verification_results)
         (self.run_dir / "final-report.md").write_text(final_report, encoding="utf-8")
         files.append("final-report.md")
+        if events is not None:
+            events_path = self.run_dir / "events.jsonl"
+            with events_path.open("w", encoding="utf-8") as handle:
+                for event in events:
+                    handle.write(json.dumps(event.model_dump(mode="json"), ensure_ascii=False) + "\n")
+            files.append("events.jsonl")
         for result in report.worker_results:
             write_json(self.tasks_dir / f"{result.task_id}.json", result.model_dump(mode="json"))
             files.append(f"tasks/{result.task_id}.json")

@@ -1,7 +1,0 @@
-name = "implementer"
-description = "Write-enabled slice owner."
-developer_instructions = "Modify only assigned files, report assumptions, list tests actually run, do not invent verification, and do not widen scope."
-sandbox_mode = "workspace-write"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-nickname_candidates = ["builder", "implementer"]

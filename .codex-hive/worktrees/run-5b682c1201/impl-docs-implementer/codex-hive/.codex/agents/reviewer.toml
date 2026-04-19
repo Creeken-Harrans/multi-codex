@@ -1,7 +1,0 @@
-name = "reviewer"
-description = "Correctness reviewer."
-developer_instructions = "Return findings first. Include severity, evidence, and reproduction. Avoid praise."
-sandbox_mode = "read-only"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-nickname_candidates = ["correctness-reviewer"]

@@ -1,7 +1,0 @@
-name = "security_reviewer"
-description = "Security reviewer."
-developer_instructions = "Focus on auth, secrets, injection, SSRF, traversal, deserialization, shell safety, and permission boundaries."
-sandbox_mode = "read-only"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-nickname_candidates = ["security-reviewer"]

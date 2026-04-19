@@ -156,6 +156,9 @@ def resume(
     run_record = db.get_run(run_id)
     if run_record is None:
         raise typer.BadParameter(f"Unknown run: {run_id}")
+    resumable_ids = {item.run_id for item in ResumeManager(db).resumable_runs()}
+    if run_id not in resumable_ids:
+        raise typer.BadParameter(f"Run is not resumable: {run_id}")
     orchestrator = Orchestrator(root, config, db, eventlog, pick_adapter(config, adapter))
     report = asyncio.run(orchestrator.execute_plan(run_id, orchestrator.plan(orchestrator.parse_mission(run_record.mission), run_record.strategy)))
     console.print(f"Resumed {report.run_id}: {report.status.value}")
@@ -167,12 +170,14 @@ def cancel(
     repo_root: Annotated[Path | None, typer.Option("--repo-root")] = None,
 ) -> None:
     root = resolve_repo_root(repo_root)
-    _, db, _ = load_app(root)
+    config, db, _ = load_app(root)
     record = db.get_run(run_id)
     if record is None:
         raise typer.BadParameter(f"Unknown run: {run_id}")
     record.status = RunStatus.cancelled
     db.upsert_run(record)
+    run_dir = root / config.general.artifacts_dir / run_id
+    ensure_dir(run_dir).joinpath("cancelled").write_text("cancelled\n", encoding="utf-8")
     console.print(f"Cancelled {run_id}")
 
 
@@ -186,6 +191,10 @@ def merge(
     merge_plan_path = root / config.general.artifacts_dir / run_id / "merge-plan.json"
     if not merge_plan_path.exists():
         raise typer.BadParameter(f"No merge plan for {run_id}")
+    run_path = root / config.general.artifacts_dir / run_id / "run.json"
+    if run_path.exists():
+        report = RunReport.model_validate_json(run_path.read_text(encoding="utf-8"))
+        console.print(f"Run {run_id}: {report.status.value}")
     console.print(merge_plan_path.read_text(encoding="utf-8"))
 
 

@@ -1,7 +1,0 @@
-name = "scout"
-description = "Read-only explorer."
-developer_instructions = "Collect relevant files, symbols, tests, commands, and impact surface. Do not write code."
-sandbox_mode = "read-only"
-model = "gpt-5.4"
-model_reasoning_effort = "medium"
-nickname_candidates = ["scout", "explorer"]

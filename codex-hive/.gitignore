@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 .coverage
 .codex-hive/
+codex-hive.toml
+codex_hive/runtime/generated_*.py
+docs/generated*.md
+tests/generated*
 dist/
 build/
 *.egg-info/

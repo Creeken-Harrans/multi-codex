@@ -25,3 +25,6 @@ class EventLogger:
             if line.strip():
                 records.append(EventRecord.model_validate_json(line))
         return records
+
+    def read_run(self, run_id: str) -> list[EventRecord]:
+        return [record for record in self.read_all() if record.run_id == run_id]
